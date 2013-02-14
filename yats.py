@@ -62,10 +62,41 @@ class AESEncryptStream():
             raise ValueError('Data shorter than expected: %s<%s' % (len(unfuzzied), offset))
         return output
 
+def split_addr(s):
+    res=[]
+    pending=None
+    while s:
+        tmp=s.split(':', 1)
+        if pending==None:
+            if tmp[0].startswith('['):
+                pending=tmp[0]
+            else:
+                res.append(tmp[0])
+        else:
+            pending+=':'+tmp[0]
+            if pending.endswith(']'):
+                res.append(pending)
+                pending=None
+        if len(tmp)>1:
+            if tmp[1]:
+                s=tmp[1]
+            else:
+                res.append(s)
+                break
+        else:
+            break
+    if pending!=None:
+        res.append(pending)
+    return res
+
+def parse_tunnel(tunnel_type, optstr):
+    if tunnel_type in (0, 1):
+        pass # TODO
+
 def start_server(bind, port):
     pass
 
-def start_client(bind, port, target, forwards):
+def start_client(bind, port, target):
     pass
 
 def server_loop():
@@ -105,6 +136,12 @@ if __name__=='__main__':
         logging.error('You must specify one of -L, -R or -D.')
         sys.exit(1)
     else:
-        start_client(options.bind, options.port, args[0], parseLRD(options.local, options.remote, options.dynamic))
+        start_client(options.bind, options.port, args[0])
+        for i in options.local:
+            client_addtunnel(parse_tunnel(0, i))
+        for i in options.remote:
+            client_addtunnel(parse_tunnel(1, i))
+        for i in options.dynamic:
+            client_addtunnel(parse_tunnel(2, i))
         sys.exit(client_loop())
 
