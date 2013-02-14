@@ -1,8 +1,66 @@
 #!/usr/bin/env python3
 
+import hashlib
 import logging
-import sys
+import random
+import os
 import socket
+import struct
+import sys
+import time
+import zlib
+try:
+    import Crypto.Cipher.AES
+except ImportError:
+    sys.stderr.write('ERROR: Please have pycrypto for Python %s.%s.%s installed.\n' % tuple(sys.version_info)[:3])
+    sys.exit(2)
+
+class AESEncryptStream():
+    def __init__(self, key):
+        self.AES=Crypto.Cipher.AES.new(hashlib.sha256(key.encode('iso-8859-1', 'replace')).digest())
+    def encrypt(self, stream, extradata=0):
+        output=b''
+        for i in range(random.randint(0, 4)):
+            output+=b'\0'+os.urandom(12)
+        output+=struct.pack('>BLLL', random.randint(1, 255), len(stream), zlib.crc32(stream)&0xffffffff, extradata)
+        stream=output+stream
+        output=b''
+        while stream:
+            if len(stream)<14:
+                stream+=os.urandom(14-len(stream))
+            output+=os.urandom(1)+stream[:14]+os.urandom(1)
+            stream=stream[14:]
+        return self.AES.encrypt(output)
+    def decrypt(self, stream):
+        if len(stream)%16!=0:
+            raise ValueError('Stream is not 16-bytes aligned')
+        stream=self.AES.decrypt(stream)
+        unfuzzied=b''
+        offset=0
+        while offset<len(stream):
+            unfuzzied+=stream[offset+1:offset+15]
+            offset+=16
+        output=[]
+        offset=0
+        while offset<len(unfuzzied):
+            header=struct.unpack_from('>BLLL', unfuzzied, offset)
+            offset+=13
+            if header[0]:
+                chunkoutput=unfuzzied[offset:offset+header[1]]
+                if len(chunkoutput)!=header[1]:
+                    raise ValueError('Data shorter than expected: %s<%s' % (len(chunkoutput), header[1]))
+                crcsum=zlib.crc32(chunkoutput)&0xffffffff
+                if crcsum==header[2]:
+                    output.append((chunkoutput, header[3]))
+                    offset+=header[1]
+                    offset_mod_14=offset%14
+                    if offset_mod_14!=0:
+                        offset+=14-offset_mod_14
+                else:
+                    raise ValueError('CRC mismatch: %08x!=%08x' % (crcsum, header[2]))
+        if offset>len(unfuzzied):
+            raise ValueError('Data shorter than expected: %s<%s' % (len(unfuzzied), offset))
+        return output
 
 def start_server(bind, port):
     pass
@@ -19,9 +77,10 @@ def client_loop():
 if __name__=='__main__':
     logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.INFO)
     import optparse
-    optparser=optparse.OptionParser(usage='Usage: %prog [-b bind_address] -p port <-d | [-L [bind_address:]port:host:hostport] [-R [bind_address:]port:host:hostport] [-D [bind_address:]port] server_address>')
+    optparser=optparse.OptionParser(usage='Usage: %prog [-b bind_address] -k key -p port <-d | [-L [bind_address:]port:host:hostport] [-R [bind_address:]port:host:hostport] [-D [bind_address:]port] server_address>')
     optparser.add_option('-d', '--daemon', action="store_true", default=False, help='Run server side instead of client side')
     optparser.add_option('-p', '--port', type="int", help='The port that this program runs on')
+    optparser.add_option('-k', '--key', help='The password for AES encryption')
     optparser.add_option('-b', '--bind', help='The address that the server listens on')
     optparser.add_option('-L', '--local', action="append", default=[], help='The same as ssh -L')
     optparser.add_option('-R', '--remote', action="append", default=[], help='The same as ssh -R')
@@ -29,6 +88,9 @@ if __name__=='__main__':
     (options, args)=optparser.parse_args()
     if options.port==None:
         logging.error('Port number must be specified.')
+        sys.exit(1)
+    if options.key==None:
+        logging.error('Password must be specified.')
         sys.exit(1)
     elif not 0<options.port<65535:
         logging.error('Port number must be between 0 and 65535.')
