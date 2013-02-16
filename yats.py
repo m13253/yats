@@ -89,36 +89,48 @@ def split_addr(s):
         res.append(pending)
     return res
 
-def parse_tunnel(tunnel_type, optstr):
-    optsplt=split_addr(optstr)
-    if tunnel_type in (0, 1):
-        if len(optsplt)==3:
-            optsplt.insert(0, '')
-        elif len(optsplt)!=4:
-            raise ValueError('Illegal forwarding option: %s' % optstr)
+class Peer():
+    def __init__(self):
+        pass
+
+class ClientPeer(Peer):
+    def __init__(self):
+        pass
+
+    def parse_tunnel(self, tunnel_type, optstr):
+        optsplt=split_addr(optstr)
+        if tunnel_type in (0, 1):
+            if len(optsplt)==3:
+                optsplt.insert(0, '')
+            elif len(optsplt)!=4:
+                raise ValueError('Illegal forwarding option: %s' % optstr)
+            else:
+                self.listens.append((tunneltype,)+tuple(optsplt))
+        elif tunnel_type==2:
+            if len(optsplt)==1:
+                optsplt.insert(0, '')
+            elif len(optsplt)!=2:
+                raise ValueError('Illegal forwarding option: %s' % optstr)
+            else:
+                self.listens.append((2,)+tuple(optsplt)+(None, None))
         else:
-            self.listens.append((tunneltype,)+tuple(optsplt))
-    elif tunnel_type==2:
-        if len(optsplt)==1:
-            optsplt.insert(0, '')
-        elif len(optsplt)!=2:
-            raise ValueError('Illegal forwarding option: %s' % optstr)
-        else:
-            self.listens.append((2,)+tuple(optsplt)+(None, None))
-    else:
-        raise ValueError('Illegal tunnel type: %s' % repr(tunnel_type))
+            raise ValueError('Illegal tunnel type: %s' % repr(tunnel_type))
 
-def start_server(bind, port):
-    pass
+    def start_client(self, bind, port, target):
+        pass
 
-def start_client(bind, port, target):
-    pass
+    def client_loop(self):
+        pass
 
-def server_loop():
-    pass
+def ServerPeer(Peer):
+    def __init__(self):
+        pass
 
-def client_loop():
-    pass
+    def start_server(self, bind, port):
+        pass
+
+    def server_loop(self):
+        pass
 
 if __name__=='__main__':
     logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.INFO)
