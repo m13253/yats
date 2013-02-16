@@ -65,7 +65,7 @@ class AESEncryptStream():
 def split_addr(s):
     res=[]
     pending=None
-    while s:
+    while True:
         tmp=s.split(':', 1)
         if pending==None:
             if tmp[0].startswith('['):
@@ -78,11 +78,7 @@ def split_addr(s):
                 res.append(pending)
                 pending=None
         if len(tmp)>1:
-            if tmp[1]:
-                s=tmp[1]
-            else:
-                res.append(s)
-                break
+            s=tmp[1]
         else:
             break
     if pending!=None:
@@ -90,8 +86,23 @@ def split_addr(s):
     return res
 
 def parse_tunnel(tunnel_type, optstr):
+    optsplt=split_addr(optstr)
     if tunnel_type in (0, 1):
-        pass # TODO
+        if len(optsplt)==3:
+            optsplt.insert(0, '')
+        elif len(optsplt)!=4:
+            raise ValueError('Illegal forwarding option: %s' % optstr)
+        else:
+            self.listens.append((tunneltype,)+tuple(optsplt))
+    elif tunnel_type==2:
+        if len(optsplt)==1:
+            optsplt.insert(0, '')
+        elif len(optsplt)!=2:
+            raise ValueError('Illegal forwarding option: %s' % optstr)
+        else:
+            self.listens.append((2,)+tuple(optsplt)+(None, None))
+    else:
+        raise ValueError('Illegal tunnel type: %s' % repr(tunnel_type))
 
 def start_server(bind, port):
     pass
