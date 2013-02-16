@@ -18,6 +18,8 @@ except ImportError:
 class AESEncryptStream():
     def __init__(self, key):
         self.AES=Crypto.Cipher.AES.new(hashlib.sha256(key.encode('iso-8859-1', 'replace')).digest())
+        self.undecrypted=b''
+        self.unprocessed=b''
     def encrypt(self, stream, extradata=0):
         output=b''
         for i in range(random.randint(0, 4)):
@@ -32,23 +34,24 @@ class AESEncryptStream():
             stream=stream[14:]
         return self.AES.encrypt(output)
     def decrypt(self, stream):
-        if len(stream)%16!=0:
-            raise ValueError('Stream is not 16-bytes aligned')
-        stream=self.AES.decrypt(stream)
-        unfuzzied=b''
+        stream=self.undecrypted+stream
+        self.undecrypted=stream[len(stream)&~0xf:len(stream)]
+        stream=self.AES.decrypt(stream[:len(stream)&~0xf])
+        unfuzzied=self.unprocessed
+        self.unprocessed=b''
         offset=0
         while offset<len(stream):
             unfuzzied+=stream[offset+1:offset+15]
             offset+=16
         output=[]
         offset=0
-        while offset<len(unfuzzied):
+        while offset+13<len(unfuzzied):
             header=struct.unpack_from('>BLLL', unfuzzied, offset)
-            offset+=13
             if header[0]:
-                chunkoutput=unfuzzied[offset:offset+header[1]]
+                chunkoutput=unfuzzied[offset+13:offset+13+header[1]]
                 if len(chunkoutput)!=header[1]:
-                    raise ValueError('Data shorter than expected: %s<%s' % (len(chunkoutput), header[1]))
+                    break
+                offset+=13
                 crcsum=zlib.crc32(chunkoutput)&0xffffffff
                 if crcsum==header[2]:
                     output.append((chunkoutput, header[3]))
@@ -58,8 +61,9 @@ class AESEncryptStream():
                         offset+=14-offset_mod_14
                 else:
                     raise ValueError('CRC mismatch: %08x!=%08x' % (crcsum, header[2]))
-        if offset>len(unfuzzied):
-            raise ValueError('Data shorter than expected: %s<%s' % (len(unfuzzied), offset))
+            else:
+                offset+=13
+        self.unprocessed=unfuzzied[offset:]
         return output
 
 def split_addr(s):
