@@ -2,12 +2,14 @@
 
 import hashlib
 import logging
-import random
 import os
+import random
+import select
 import socket
 import struct
 import sys
 import time
+import uuid
 import zlib
 try:
     import Crypto.Cipher.AES
@@ -91,7 +93,40 @@ def split_addr(s):
 
 class Peer():
     def __init__(self):
-        pass
+        self.socks={}
+        self.poller=select.epoll()
+
+    def flush_buf(self, fileno):
+        sendcount=0
+        try:
+            while not self.socks[fileno]['ready'] and self.socks[fileno]['wbuf']:
+                thissendcount=self.socks[fileno]['sock'].send(self.socks[fileno]['wbuf'])
+                if thissendcount:
+                    sendcount+=thissendcount
+                    self.socks[fileno]['wbuf']=self.socks[fileno]['wbuf'][thissendcount:]
+                else:
+                    return sendcount
+        except ssl.SSLWantWriteError:
+            self.socks[fileno]['ready']=False
+        except socket.error as e:
+            if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                self.socks[fileno]['ready']=False
+            else:
+                raise
+        return sendcount
+
+    def close_socket(self, fileno):
+        logging.info('Closing %d', fileno)
+        sock=self.socks[fileno]['sock']
+        try:
+            self.poller.unregister(fileno)
+        except Exception:
+            pass
+        del self.socks[fileno]
+        try:
+            sock.close()
+        except Exception:
+            pass
 
 class ClientPeer(Peer):
     def __init__(self):
