@@ -124,12 +124,12 @@ class ClientPeer(Peer):
     def start_client(self, bind, port, target):
         pass
 
-    def client_loop(self):
+    def loop(self):
         pass
 
 class ServerDisp(asyncore.dispatcher):
     def __init__(self, peer, bind_addr):
-        super(ServerDisp, self).__init__()
+        asyncore.dispatcher.__init__(self)
         bind_addr=tuple(bind_addr)
         if bind_addr[0].startswith('[') and bind_addr[0].endswith(']'):
             bind_addr[0]=bind_addr[0][1:-1]
@@ -150,14 +150,14 @@ class ServerDisp(asyncore.dispatcher):
 
 class ServerPeer(Peer):
     def __init__(self, bind_addrs):
-        super(ServerPeer, self).__init__()
+        Peer.__init__(self)
         for bind_addr in bind_addrs:
             if bind_addr[0]==None:
                 ServerDisp(self, ('::',)+bind_addr[1:])
             else:
                 ServerDisp(self, bind_addr)
 
-    def server_loop(self):
+    def loop(self):
         asyncore.loop()
 
 if __name__=='__main__':
