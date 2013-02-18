@@ -36,6 +36,8 @@ class AESEncryptStream():
             output+=os.urandom(1)+stream[:14]+os.urandom(1)
             stream=stream[14:]
         return self.AES.encrypt(output)
+    def encryptjson(self, stream, extradata=0):
+        return self.encrypt(json.dumps(stream).encode('utf-8', 'replace'), extradata)
     def decrypt(self, stream):
         stream=self.undecrypted+stream
         self.undecrypted=stream[len(stream)&~0xf:len(stream)]
@@ -68,6 +70,8 @@ class AESEncryptStream():
                 offset+=13
         self.unprocessed=unfuzzied[offset:]
         return output
+    def decryptjson(self, stream):
+        return [(json.loads(i[0].decode('utf-8', 'replace')), i[1]) for i in self.decrypt(stream)]
 
 def split_addr(s):
     res=[]
@@ -94,13 +98,17 @@ def split_addr(s):
 
 class Peer():
     def __init__(self):
-        self.listens=[]
-        self.socks={}
-        self.requests={}
+        pass
 
 class ClientPeer(Peer):
-    def __init__(self):
-        super(ClientPeer, self).__init__()
+    def __init__(self, bind, addr, key):
+        Peer.__init__(self)
+        self.key=key
+        self.socks={}
+        self.listens=[]
+        if bind==None:
+            bind=''
+        ClientDisp(self, socket.AF_INET, (bind, 0), addr)
 
     def parse_tunnel(self, tunnel_type, optstr):
         optsplt=split_addr(optstr)
@@ -110,7 +118,7 @@ class ClientPeer(Peer):
             elif len(optsplt)!=4:
                 raise ValueError('Illegal forwarding option: %s' % optstr)
             else:
-                self.listens.append((tunneltype,)+tuple(optsplt))
+                self.listens.append((tunnel_type,)+tuple(optsplt))
         elif tunnel_type==2:
             if len(optsplt)==1:
                 optsplt.insert(0, '')
@@ -121,18 +129,99 @@ class ClientPeer(Peer):
         else:
             raise ValueError('Illegal tunnel type: %s' % repr(tunnel_type))
 
-    def start_client(self, bind, port, target):
-        pass
+    def loop(self):
+        while self.socks:
+            asyncore.loop(30, use_poll=True, map=self.socks) # Why don't the fucking Python use epoll??!
+            for i in self.socks:
+                try:
+                    self.socks[i].send_ping()
+                except AttributeError:
+                    pass
+
+class ServerPeer(Peer):
+    def __init__(self, bind_addrs, key):
+        Peer.__init__(self)
+        self.key=key
+        self.socks={}
+        for bind_addr in bind_addrs:
+            if bind_addr[0]==None:
+                ServerDisp(self, ('::',)+bind_addr[1:])
+            else:
+                ServerDisp(self, bind_addr)
 
     def loop(self):
-        pass
+        while self.socks:
+            asyncore.loop(30, use_poll=True, map=self.socks, count=1) # Why don't the fucking Python use epoll??!
+            for i in self.socks:
+                try:
+                    self.socks[i].send_ping()
+                except AttributeError:
+                    pass
+
+class ClientDisp(asyncore.dispatcher):
+    def __init__(self, peer, sock_family, bind_addr, target):
+        asyncore.dispatcher.__init__(self, map=peer.socks)
+        self.peer=peer
+        self.connected=False
+        self.lastping=time.time()
+        self.encrypter=AESEncryptStream(peer.key)
+        self.wbuf=self.encrypter.encryptjson({'action': 'hello', 'time': time.time()})
+        if bind_addr[0].startswith('[') and bind_addr[0].endswith(']'):
+            bind_addr=bind_addr[0][1:-1]+bind_addr[1:]
+        self.create_socket(sock_family, socket.SOCK_STREAM)
+        self.bind((bind_addr))
+        self.connect(target)
+
+    def handle_connect(self):
+        self.connected=True
+        self.lastping=time.time()
+
+    def handle_read(self):
+        try:
+            data_chunks=self.encrypter.decryptjson(self.recv(4096))
+            logging.info(repr(data_chunks))
+            for data, extdata in data_chunks:
+                if extdata==0x706f6e67:
+                    self.lastping=None
+                elif extdata==0x70696e67:
+                    self.wbuf+=self.encrypter.encryptjson({'time': time.time()}, 0x706f6e67)
+                elif 'time' in data and not -900<data['time']-time.time()<900:
+                    self.close()
+                elif 'action' in data:
+                    if data['action']=='hello':
+                        if 'time' in data:
+                            logging.info('Connection established.')
+                        else:
+                            self.wbuf+=self.encrypter.encryptjson({'action': 'error', 'error': 'Time needed'})
+                    else:
+                        self.wbuf+=self.encrypter.encryptjson({'action': 'error', 'error': 'Unknown action'})
+        except ValueError:
+            self.close()
+
+    def handle_write(self):
+        sent = self.send(self.wbuf)
+        self.wbuf = self.wbuf[sent:]
+
+    def handle_close(self):
+        self.close()
+
+    def writable(self):
+        return len(self.wbuf)!=0
+
+    def send_ping(self):
+        curtime=time.time()
+        if self.lastping==None and self.connected:
+            self.wbuf+=self.encrypter.encryptjson({'time': time.time()}, 0x706f6e67)
+            self.lastping=curtime
+        elif self.lastping-curtime>120:
+            self.close()
 
 class ServerDisp(asyncore.dispatcher):
     def __init__(self, peer, bind_addr):
-        asyncore.dispatcher.__init__(self)
-        bind_addr=tuple(bind_addr)
+        asyncore.dispatcher.__init__(self, map=peer.socks)
+        self.peer=peer
         if bind_addr[0].startswith('[') and bind_addr[0].endswith(']'):
-            bind_addr[0]=bind_addr[0][1:-1]
+            bind_addr=bind_addr[0][1:-1]+bind_addr[1:]
             sock_family=socket.AF_INET6
         elif bind_addr[0].find(':')!=-1:
             sock_family=socket.AF_INET6
@@ -146,19 +235,62 @@ class ServerDisp(asyncore.dispatcher):
     def handle_accept(self):
         sock, addr=self.accept()
         logging.info('Accepted connection from %s:%s' % (addr[0], addr[1]))
-        sock.close()
+        ServerHandler(sock, addr, self.peer)
 
-class ServerPeer(Peer):
-    def __init__(self, bind_addrs):
-        Peer.__init__(self)
-        for bind_addr in bind_addrs:
-            if bind_addr[0]==None:
-                ServerDisp(self, ('::',)+bind_addr[1:])
-            else:
-                ServerDisp(self, bind_addr)
+class ServerHandler(asyncore.dispatcher_with_send):
+    def __init__(self, sock, addr, peer):
+        asyncore.dispatcher_with_send.__init__(self, sock=sock, map=peer.socks)
+        self.wbuf=b''
+        self.lastping=time.time()
+        self.auth=False
+        self.data_tunnel=False
+        self.peer=peer
+        self.encrypter=AESEncryptStream(peer.key)
 
-    def loop(self):
-        asyncore.loop()
+    def handle_read(self):
+        try:
+            data_chunks=self.encrypter.decrypt(self.recv(4096))
+            logging.info(repr(data_chunks))
+            for data, extdata in data_chunks:
+                if extdata==0x706f6e67:
+                    self.lastping=None
+                elif extdata==0x70696e67:
+                    self.wbuf+=self.encrypter.encryptjson({'time': time.time()}, 0x706f6e67)
+                elif self.data_tunnel:
+                    logging.info('Data: %s' % repr(data))
+                else:
+                    data=json.loads(data.decode('utf-8', 'replace'))
+                    if 'time' in data and not -900<data['time']-time.time()<900:
+                        self.close()
+                    elif 'action' in data:
+                        if data['action']=='hello':
+                            if 'time' in data:
+                                self.auth=True
+                                self.wbuf+=self.encrypter.encryptjson({'time': time.time(), 'action': 'hello'})
+                            else:
+                                self.wbuf+=self.encrypter.encryptjson({'action': 'error', 'error': 'Time needed'})
+                        else:
+                            self.wbuf+=self.encrypter.encryptjson({'action': 'error', 'error': 'Unknown action'})
+        except ValueError:
+            self.close()
+
+    def handle_write(self):
+        sent = self.send(self.wbuf)
+        self.wbuf = self.wbuf[sent:]
+
+    def handle_close(self):
+        self.close()
+
+    def writable(self):
+        return len(self.wbuf)!=0
+
+    def send_ping(self):
+        curtime=time.time()
+        if self.lastping==None and self.auth:
+            self.wbuf+=self.encrypter.encryptjson({'time': time.time()}, 0x706f6e67)
+            self.lastping=curtime
+        elif self.lastping-curtime>120:
+            self.close()
 
 if __name__=='__main__':
     logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.INFO)
@@ -182,7 +314,7 @@ if __name__=='__main__':
         logging.error('Port number must be between 0 and 65535.')
         sys.exit(1)
     elif options.daemon:
-        sys.exit(ServerPeer([(options.bind, options.port)]).loop())
+        sys.exit(ServerPeer([(options.bind, options.port)], options.key).loop())
     elif len(args)!=1:
         logging.error('You must specify a server to connect to.')
         sys.exit(1)
@@ -190,12 +322,12 @@ if __name__=='__main__':
         logging.error('You must specify one of -L, -R or -D.')
         sys.exit(1)
     else:
-        client_peer=ClientPeer(options.bind, args[0], options.port)
+        client_peer=ClientPeer(options.bind, (args[0], options.port), options.key)
         for i in options.local:
-            client_peer.addtunnel(parse_tunnel(0, i))
+            client_peer.parse_tunnel(0, i)
         for i in options.remote:
-            client_peer.addtunnel(parse_tunnel(1, i))
+            client_peer.parse_tunnel(1, i)
         for i in options.dynamic:
-            client_peer.addtunnel(parse_tunnel(2, i))
+            client_peer.parse_tunnel(2, i)
         sys.exit(client_peer.loop())
 
