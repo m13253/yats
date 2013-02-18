@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 
+import asyncore
 import hashlib
+import json
 import logging
 import os
 import random
-import select
 import socket
 import struct
 import sys
@@ -93,44 +94,13 @@ def split_addr(s):
 
 class Peer():
     def __init__(self):
+        self.listens=[]
         self.socks={}
-        self.poller=select.epoll()
-
-    def flush_buf(self, fileno):
-        sendcount=0
-        try:
-            while not self.socks[fileno]['ready'] and self.socks[fileno]['wbuf']:
-                thissendcount=self.socks[fileno]['sock'].send(self.socks[fileno]['wbuf'])
-                if thissendcount:
-                    sendcount+=thissendcount
-                    self.socks[fileno]['wbuf']=self.socks[fileno]['wbuf'][thissendcount:]
-                else:
-                    return sendcount
-        except ssl.SSLWantWriteError:
-            self.socks[fileno]['ready']=False
-        except socket.error as e:
-            if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
-                self.socks[fileno]['ready']=False
-            else:
-                raise
-        return sendcount
-
-    def close_socket(self, fileno):
-        logging.info('Closing %d', fileno)
-        sock=self.socks[fileno]['sock']
-        try:
-            self.poller.unregister(fileno)
-        except Exception:
-            pass
-        del self.socks[fileno]
-        try:
-            sock.close()
-        except Exception:
-            pass
+        self.requests={}
 
 class ClientPeer(Peer):
     def __init__(self):
-        pass
+        super(ClientPeer, self).__init__()
 
     def parse_tunnel(self, tunnel_type, optstr):
         optsplt=split_addr(optstr)
@@ -157,15 +127,38 @@ class ClientPeer(Peer):
     def client_loop(self):
         pass
 
-def ServerPeer(Peer):
-    def __init__(self):
-        pass
+class ServerDisp(asyncore.dispatcher):
+    def __init__(self, peer, bind_addr):
+        super(ServerDisp, self).__init__()
+        bind_addr=tuple(bind_addr)
+        if bind_addr[0].startswith('[') and bind_addr[0].endswith(']'):
+            bind_addr[0]=bind_addr[0][1:-1]
+            sock_family=socket.AF_INET6
+        elif bind_addr[0].find(':')!=-1:
+            sock_family=socket.AF_INET6
+        else:
+            sock_family=socket.AF_INET
+        self.create_socket(sock_family, socket.SOCK_STREAM)
+        self.set_reuse_addr()
+        self.bind(bind_addr)
+        self.listen(5)
 
-    def start_server(self, bind, port):
-        pass
+    def handle_accept(self):
+        sock, addr=self.accept()
+        logging.info('Accepted connection from %s:%s' % (addr[0], addr[1]))
+        sock.close()
+
+class ServerPeer(Peer):
+    def __init__(self, bind_addrs):
+        super(ServerPeer, self).__init__()
+        for bind_addr in bind_addrs:
+            if bind_addr[0]==None:
+                ServerDisp(self, ('::',)+bind_addr[1:])
+            else:
+                ServerDisp(self, bind_addr)
 
     def server_loop(self):
-        pass
+        asyncore.loop()
 
 if __name__=='__main__':
     logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.INFO)
@@ -189,8 +182,7 @@ if __name__=='__main__':
         logging.error('Port number must be between 0 and 65535.')
         sys.exit(1)
     elif options.daemon:
-        start_service(options.bind, options.port)
-        sys.exit(service_loop())
+        sys.exit(ServerPeer([(options.bind, options.port)]).loop())
     elif len(args)!=1:
         logging.error('You must specify a server to connect to.')
         sys.exit(1)
@@ -198,12 +190,12 @@ if __name__=='__main__':
         logging.error('You must specify one of -L, -R or -D.')
         sys.exit(1)
     else:
-        start_client(options.bind, options.port, args[0])
+        client_peer=ClientPeer(options.bind, args[0], options.port)
         for i in options.local:
-            client_addtunnel(parse_tunnel(0, i))
+            client_peer.addtunnel(parse_tunnel(0, i))
         for i in options.remote:
-            client_addtunnel(parse_tunnel(1, i))
+            client_peer.addtunnel(parse_tunnel(1, i))
         for i in options.dynamic:
-            client_addtunnel(parse_tunnel(2, i))
-        sys.exit(client_loop())
+            client_peer.addtunnel(parse_tunnel(2, i))
+        sys.exit(client_peer.loop())
 
