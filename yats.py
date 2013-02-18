@@ -72,6 +72,30 @@ class AESEncryptStream():
         return output
     def decryptjson(self, stream):
         return [(json.loads(i[0].decode('utf-8', 'replace')), i[1]) for i in self.decrypt(stream)]
+    def havepending(self):
+        return bool(self.undecrypted) or bool(self.unprocessed)
+    def flushpending(self):
+        self.undecrypted=b''
+        self.unprocessed=b''
+
+class MyAsyncDispatcher(asyncore.dispatcher):
+    def __init__(self, sock=None, map=None):
+        asyncore.dispatcher.__init__(self, sock=sock, map=map)
+        self.wbuf=b''
+
+    def handle_write(self):
+        sent = self.send(self.wbuf)
+        self.wbuf = self.wbuf[sent:]
+
+    def handle_close(self):
+        self.close()
+
+    def writable(self):
+        return len(self.wbuf)!=0
+
+    def buffer(self, data):
+        self.wbuf+=data
+        return len(data)
 
 def split_addr(s):
     res=[]
@@ -131,7 +155,7 @@ class ClientPeer(Peer):
 
     def loop(self):
         while self.socks:
-            asyncore.loop(30, use_poll=True, map=self.socks) # Why don't the fucking Python use epoll??!
+            asyncore.loop(30, use_poll=True, map=self.socks, count=1) # Why don't the fucking Python use epoll??!
             for i in self.socks:
                 try:
                     self.socks[i].send_ping()
@@ -158,11 +182,10 @@ class ServerPeer(Peer):
                 except AttributeError:
                     pass
 
-class ClientDisp(asyncore.dispatcher):
+class ClientDisp(MyAsyncDispatcher):
     def __init__(self, peer, sock_family, bind_addr, target):
-        asyncore.dispatcher.__init__(self, map=peer.socks)
+        MyAsyncDispatcher.__init__(self, map=peer.socks)
         self.peer=peer
-        self.connected=False
         self.lastping=time.time()
         self.encrypter=AESEncryptStream(peer.key)
         self.wbuf=self.encrypter.encryptjson({'action': 'hello', 'time': time.time()})
@@ -173,7 +196,6 @@ class ClientDisp(asyncore.dispatcher):
         self.connect(target)
 
     def handle_connect(self):
-        self.connected=True
         self.lastping=time.time()
 
     def handle_read(self):
@@ -182,8 +204,10 @@ class ClientDisp(asyncore.dispatcher):
             logging.info(repr(data_chunks))
             for data, extdata in data_chunks:
                 if extdata==0x706f6e67:
+                    logging.info('Pong: %s', data['time'])
                     self.lastping=None
                 elif extdata==0x70696e67:
+                    logging.info('Ping')
                     self.wbuf+=self.encrypter.encryptjson({'time': time.time()}, 0x706f6e67)
                 elif 'time' in data and not -900<data['time']-time.time()<900:
                     self.close()
@@ -198,22 +222,12 @@ class ClientDisp(asyncore.dispatcher):
         except ValueError:
             self.close()
 
-    def handle_write(self):
-        sent = self.send(self.wbuf)
-        self.wbuf = self.wbuf[sent:]
-
-    def handle_close(self):
-        self.close()
-
-    def writable(self):
-        return len(self.wbuf)!=0
-
     def send_ping(self):
         curtime=time.time()
         if self.lastping==None and self.connected:
             self.wbuf+=self.encrypter.encryptjson({'time': time.time()}, 0x706f6e67)
             self.lastping=curtime
-        elif self.lastping-curtime>120:
+        elif self.lastping-curtime>60:
             self.close()
 
 class ServerDisp(asyncore.dispatcher):
@@ -237,10 +251,9 @@ class ServerDisp(asyncore.dispatcher):
         logging.info('Accepted connection from %s:%s' % (addr[0], addr[1]))
         ServerHandler(sock, addr, self.peer)
 
-class ServerHandler(asyncore.dispatcher_with_send):
+class ServerHandler(MyAsyncDispatcher):
     def __init__(self, sock, addr, peer):
-        asyncore.dispatcher_with_send.__init__(self, sock=sock, map=peer.socks)
-        self.wbuf=b''
+        MyAsyncDispatcher.__init__(self, sock=sock, map=peer.socks)
         self.lastping=time.time()
         self.auth=False
         self.data_tunnel=False
@@ -251,10 +264,14 @@ class ServerHandler(asyncore.dispatcher_with_send):
         try:
             data_chunks=self.encrypter.decrypt(self.recv(4096))
             logging.info(repr(data_chunks))
+            if not data_chunks and not self.auth:
+                self.close()
             for data, extdata in data_chunks:
                 if extdata==0x706f6e67:
+                    logging.info('Pong: %s', data['time'])
                     self.lastping=None
                 elif extdata==0x70696e67:
+                    logging.info('Ping')
                     self.wbuf+=self.encrypter.encryptjson({'time': time.time()}, 0x706f6e67)
                 elif self.data_tunnel:
                     logging.info('Data: %s' % repr(data))
@@ -274,22 +291,12 @@ class ServerHandler(asyncore.dispatcher_with_send):
         except ValueError:
             self.close()
 
-    def handle_write(self):
-        sent = self.send(self.wbuf)
-        self.wbuf = self.wbuf[sent:]
-
-    def handle_close(self):
-        self.close()
-
-    def writable(self):
-        return len(self.wbuf)!=0
-
     def send_ping(self):
         curtime=time.time()
         if self.lastping==None and self.auth:
             self.wbuf+=self.encrypter.encryptjson({'time': time.time()}, 0x706f6e67)
             self.lastping=curtime
-        elif self.lastping-curtime>120:
+        elif self.lastping-curtime>60:
             self.close()
 
 if __name__=='__main__':
