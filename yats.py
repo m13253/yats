@@ -203,7 +203,10 @@ class ClientDisp(MyAsyncDispatcher):
             data_chunks=self.encrypter.decryptjson(self.recv(4096))
             logging.info(repr(data_chunks))
             for data, extdata in data_chunks:
-                if extdata==0x706f6e67:
+                if not isinstance(data, dict):
+                    self.close()
+                    logging.error('Corrupted command.')
+                elif extdata==0x706f6e67:
                     logging.info('Pong: %s', data['time'])
                     self.lastping=None
                 elif extdata==0x70696e67:
@@ -211,12 +214,14 @@ class ClientDisp(MyAsyncDispatcher):
                     self.wbuf+=self.encrypter.encryptjson({'time': time.time()}, 0x706f6e67)
                 elif 'time' in data and not -900<data['time']-time.time()<900:
                     self.close()
+                    logging.error('Time mismatch, possibly replay attack.')
                 elif 'action' in data:
                     if data['action']=='hello':
                         if 'time' in data:
                             logging.info('Connection established.')
                         else:
-                            self.wbuf+=self.encrypter.encryptjson({'action': 'error', 'error': 'Time needed'})
+                            self.close()
+                            logging.error('Time not provided, possibly corrupted packet.')
                     else:
                         self.wbuf+=self.encrypter.encryptjson({'action': 'error', 'error': 'Unknown action'})
         except ValueError:
@@ -277,17 +282,23 @@ class ServerHandler(MyAsyncDispatcher):
                     logging.info('Data: %s' % repr(data))
                 else:
                     data=json.loads(data.decode('utf-8', 'replace'))
-                    if 'time' in data and not -900<data['time']-time.time()<900:
+                    if not isinstance(data, dict):
                         self.close()
+                        logging.error('Corrupted command.')
+                    elif 'time' in data and not -900<data['time']-time.time()<900:
+                        self.close()
+                        logging.error('Time mismatch, possibly replay attack.')
                     elif 'action' in data:
                         if data['action']=='hello':
                             if 'time' in data:
                                 self.auth=True
                                 self.wbuf+=self.encrypter.encryptjson({'time': time.time(), 'action': 'hello'})
                             else:
-                                self.wbuf+=self.encrypter.encryptjson({'action': 'error', 'error': 'Time needed'})
+                                self.close()
+                                logging.error('Time not provided, possibly corrupted packet.')
                         else:
                             self.wbuf+=self.encrypter.encryptjson({'action': 'error', 'error': 'Unknown action'})
+                            logging.error('Unknown command from client: %s' % repr(data['action']))
         except ValueError:
             self.close()
 
