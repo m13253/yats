@@ -3,6 +3,29 @@
 import logging
 import sys
 
+def split_addr(s):
+    res=[]
+    pending=None
+    while True:
+        tmp=s.split(':', 1)
+        if pending==None:
+            if tmp[0].startswith('['):
+                pending=tmp[0]
+            else:
+                res.append(tmp[0])
+        else:
+            pending+=':'+tmp[0]
+            if pending.endswith(']'):
+                res.append(pending)
+                pending=None
+        if len(tmp)>1:
+            s=tmp[1]
+        else:
+            break
+    if pending!=None:
+        res.append(pending)
+    return res
+
 def main():
     logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.INFO)
     import optparse
