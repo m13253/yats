@@ -26,7 +26,7 @@ def split_addr(s):
         res.append(pending)
     return res
 
-def main():
+def run():
     logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.INFO)
     import optparse
     optparser=optparse.OptionParser(usage='Usage: %prog [-b bind_address] -k key -p port <-d | [-L [bind_address:]port:host:hostport] [-R [bind_address:]port:host:hostport] [-D [bind_address:]port] server_address>')
