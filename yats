@@ -4,4 +4,3 @@ import sys
 import lib.yats
 
 sys.exit(lib.yats.run())
-
